@@ -2,14 +2,19 @@ const mongoose = require("mongoose");
 
 const medicationSchema = new mongoose.Schema(
   {
+    userId: {
+      type: String,
+      required: [true, "userId is required"],
+      index: true,
+    },
     medicationName: {
       type: String,
       required: [true, "Medication name is required"],
-      trim: true
+      trim: true,
     },
     time: {
-      type: String, // or Date if you prefer
-      required: true,
+      type: Date,
+      required: [true, "Time is required"],
     },
     isActive: {
       type: Boolean,
@@ -17,11 +22,18 @@ const medicationSchema = new mongoose.Schema(
     },
     repeating: {
       type: Boolean,
-      default: false  // This field will indicate whether the reminder repeats
+      default: false,
+    },
+    // Stores the OS-returned notification identifier so we can
+    // skip re-scheduling if a trigger is already registered.
+    notificationId: {
+      type: String,
+      default: null,
     },
   },
   {
     collection: "MedicationInfo",
+    timestamps: true,
   }
 );
 
