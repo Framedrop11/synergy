@@ -18,6 +18,7 @@ const PORT = process.env.PORT || 5001;
 const JWT_SECRET = process.env.JWT_SECRET;
 const MONGO_URI = process.env.MONGO_URI;
 const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 if (!GOOGLE_WEB_CLIENT_ID) {
   console.warn("GOOGLE_WEB_CLIENT_ID is not set. Google sign-in is disabled until it is configured.");
@@ -45,6 +46,14 @@ const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 10,
   message: { message: "Too many login attempts. Please try again in 15 minutes." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const reminderParseLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { message: "AI parsing is temporarily rate limited. Please enter the reminder manually." },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -187,6 +196,118 @@ app.post("/auth/google", loginLimiter, async (req, res) => {
     res.status(200).json({ token, userId: user._id.toString(), message: "Login successful" });
   } catch {
     return res.status(401).json({ message: "Invalid or unverified Google token" });
+  }
+});
+
+// Parse user-provided reminder wording into reviewable schedule suggestions.
+// The model only extracts what was stated; it must not prescribe or infer clock times.
+app.post("/reminders/parse", authenticate, reminderParseLimiter, async (req, res) => {
+  if (!GROQ_API_KEY) {
+    return res.status(503).json({ message: "AI parsing is unavailable. Please enter the reminder manually." });
+  }
+
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  if (text.length < 3 || text.length > 300) {
+    return res.status(400).json({ message: "Enter a reminder description between 3 and 300 characters." });
+  }
+
+  const schema = {
+    type: "object",
+    properties: {
+      medicationName: { type: "string" },
+      frequency: { type: "string", enum: ["daily", "once", "unsupported", "unclear"] },
+      times: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            label: { type: "string" },
+            time: { type: ["string", "null"] },
+          },
+          required: ["label", "time"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["medicationName", "frequency", "times"],
+    additionalProperties: false,
+  };
+
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({
+        model: "openai/gpt-oss-20b",
+        temperature: 0,
+        max_completion_tokens: 500,
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "reminder_schedule", strict: true, schema },
+        },
+        messages: [
+          {
+            role: "system",
+            content: [
+              "Extract a reminder schedule from the user's text. Do not provide medical advice, change a dose, or invent medication instructions.",
+              "Preserve the medicine name and strength/dose exactly as stated in medicationName.",
+              "frequency must be daily for a daily schedule, once for a one-time reminder, unsupported for weekly/other recurrence patterns, or unclear when the request cannot be understood.",
+              "Create one times item per stated dose occurrence, up to four. Keep meal context in label (for example Breakfast or Dinner).",
+              "Only put a time in HH:mm 24-hour format when the user explicitly gave a clock time. For meal words or vague periods such as morning/evening without a clock time, set time to null. Never guess meal clock times.",
+              "If a frequency is stated but its dose times are not, create the matching number of items with descriptive labels and null times. If no frequency is stated, create one item.",
+              "Return only data matching the required schema.",
+            ].join(" "),
+          },
+          { role: "user", content: text },
+        ],
+      }),
+    });
+
+    if (response.status === 429) {
+      return res.status(429).json({ message: "AI parsing is busy. Please enter the reminder manually or try again later." });
+    }
+    if (!response.ok) {
+      console.error("Groq reminder parsing failed with status:", response.status);
+      return res.status(502).json({ message: "AI parsing is unavailable right now. Please enter the reminder manually." });
+    }
+
+    const result = await response.json();
+    const content = result.choices?.[0]?.message?.content;
+    if (typeof content !== "string") {
+      return res.status(502).json({ message: "AI could not read that reminder. Please enter it manually." });
+    }
+
+    const parsed = JSON.parse(content);
+    if (parsed.frequency === "unsupported") {
+      return res.status(422).json({ message: "This app supports one-time and daily reminders. Please enter this schedule manually." });
+    }
+    if (parsed.frequency === "unclear" || !parsed.medicationName?.trim() || !Array.isArray(parsed.times) || parsed.times.length < 1 || parsed.times.length > 4) {
+      return res.status(422).json({ message: "I couldn't identify a complete reminder. Add the medicine and schedule manually." });
+    }
+
+    const validTimes = parsed.times.every((item) =>
+      item && typeof item.label === "string" && item.label.length <= 40 &&
+      (item.time === null || (typeof item.time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(item.time)))
+    );
+    if (!validTimes || parsed.medicationName.length > 100) {
+      return res.status(422).json({ message: "AI returned an invalid schedule. Please enter the reminder manually." });
+    }
+
+    return res.json({
+      medicationName: parsed.medicationName.trim(),
+      frequency: parsed.frequency,
+      times: parsed.times,
+    });
+  } catch (error) {
+    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+      return res.status(504).json({ message: "AI parsing took too long. Please enter the reminder manually." });
+    }
+    console.error("Error parsing reminder with Groq:", error?.message || "unknown error");
+    return res.status(502).json({ message: "AI parsing failed. Please enter the reminder manually." });
   }
 });
 
