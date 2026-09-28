@@ -7,6 +7,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const rateLimit = require("express-rate-limit");
 const https = require("https");
+const { OAuth2Client } = require("google-auth-library");
 
 const User = require("./UserDetails");
 const Medication = require("./MedicationDetails");
@@ -16,6 +17,14 @@ const app = express();
 const PORT = process.env.PORT || 5001;
 const JWT_SECRET = process.env.JWT_SECRET;
 const MONGO_URI = process.env.MONGO_URI;
+const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID;
+
+if (!GOOGLE_WEB_CLIENT_ID) {
+  console.error("FATAL: GOOGLE_WEB_CLIENT_ID is not set. Set it in the environment and restart.");
+  process.exit(1);
+}
+
+const googleClient = new OAuth2Client(GOOGLE_WEB_CLIENT_ID);
 
 // ─── CORS & JSON ────────────────────────────────────────────────────────────
 app.use(cors({ origin: "*", methods: ["GET", "POST", "DELETE", "PUT"], allowedHeaders: ["Content-Type", "Authorization"] }));
@@ -41,29 +50,15 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// ─── UNIFIED AUTH MIDDLEWARE (Step 1.2) ──────────────────────────────────
-// Accepts two token types:
-//   1. Our own HMAC-signed JWT  (source: custom email/password login)
-//   2. Clerk session JWT        (source: Google OAuth via Clerk)
-// Both result in a consistent req.user = { userId, source }
+// ─── AUTH ────────────────────────────────────────────────────────────────────
+// Verifies our own HMAC-signed JWT (email/password and Google login both issue this).
 
-const { verifyToken } = require("@clerk/backend");
-
-async function verifyClerkToken(token) {
-  const clerkSecretKey = process.env.CLERK_SECRET_KEY;
-  if (!clerkSecretKey) throw new Error("CLERK_SECRET_KEY not set");
-
-  try {
-    const verified = await verifyToken(token, { secretKey: clerkSecretKey });
-    return verified;
-  } catch (err) {
-    // Fallback: decode claims if token is a valid Clerk session structure
-    const decoded = jwt.decode(token);
-    if (decoded && decoded.sub && (decoded.iss?.includes("clerk") || decoded.azp)) {
-      return decoded;
-    }
-    throw err;
-  }
+function issueAuthToken(user) {
+  return jwt.sign(
+    { userId: user._id.toString(), email: user.email, source: "custom" },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
 }
 
 async function authenticate(req, res, next) {
@@ -75,26 +70,13 @@ async function authenticate(req, res, next) {
   const token = authHeader.split(" ")[1];
 
   try {
-    // First try our own HMAC JWT
     const payload = jwt.verify(token, JWT_SECRET);
     req.user = { userId: payload.userId, source: "custom" };
-
-    // Log auth check
     ActivityLog.create({ userId: payload.userId, action: "auth_check", meta: "valid" }).catch(() => {});
     return next();
-  } catch (customErr) {
-    // Fall back to Clerk JWT
-    try {
-      const clerkPayload = await verifyClerkToken(token);
-      // Clerk stores the user id in `sub`
-      req.user = { userId: clerkPayload.sub, source: "clerk" };
-
-      ActivityLog.create({ userId: clerkPayload.sub, action: "auth_check", meta: "valid" }).catch(() => {});
-      return next();
-    } catch (clerkErr) {
-      ActivityLog.create({ userId: "unknown", action: "auth_check", meta: "rejected" }).catch(() => {});
-      return res.status(401).json({ message: "Invalid or expired token" });
-    }
+  } catch {
+    ActivityLog.create({ userId: "unknown", action: "auth_check", meta: "rejected" }).catch(() => {});
+    return res.status(401).json({ message: "Invalid or expired token" });
   }
 }
 
@@ -139,7 +121,7 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// Login — rate limited, now issues a signed JWT (Step 1.2 + 1.6)
+// Login — rate limited, issues a signed JWT
 app.post("/login", loginLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ message: "Email and password are required." });
@@ -147,21 +129,61 @@ app.post("/login", loginLimiter, async (req, res) => {
   try {
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: "User not found" });
+    if (!user.password) return res.status(400).json({ message: "Invalid credentials" });
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) return res.status(400).json({ message: "Invalid credentials" });
 
-    // Issue a signed JWT — same shape as Clerk tokens for middleware compatibility
-    const token = jwt.sign(
-      { userId: user._id.toString(), email: user.email, source: "custom" },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
+    const token = issueAuthToken(user);
     res.status(200).json({ token, userId: user._id.toString(), message: "Login successful" });
   } catch (error) {
     console.error("Error during login:", error);
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Google Sign-In — verify Google ID token, issue the same JWT shape as /login
+app.post("/auth/google", loginLimiter, async (req, res) => {
+  const { idToken } = req.body;
+  if (!idToken) return res.status(400).json({ message: "idToken is required." });
+
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: GOOGLE_WEB_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    if (!payload || payload.email_verified !== true) {
+      return res.status(401).json({ message: "Invalid or unverified Google token" });
+    }
+
+    const { sub, email, name } = payload;
+    if (!sub || !email) {
+      return res.status(401).json({ message: "Invalid or unverified Google token" });
+    }
+
+    let user = await User.findOne({ googleId: sub });
+    if (!user) {
+      user = await User.findOne({ email });
+      if (user) {
+        user.googleId = sub;
+        if (name && (!user.name || user.name.length < 3)) user.name = name;
+        await user.save();
+      } else {
+        const displayName = (name && name.trim().length >= 3) ? name.trim() : email.split("@")[0];
+        const safeName = displayName.length >= 3 ? displayName : `${displayName}user`;
+        user = await User.create({
+          name: safeName,
+          email,
+          googleId: sub,
+        });
+      }
+    }
+
+    const token = issueAuthToken(user);
+    res.status(200).json({ token, userId: user._id.toString(), message: "Login successful" });
+  } catch {
+    return res.status(401).json({ message: "Invalid or unverified Google token" });
   }
 });
 

@@ -9,9 +9,10 @@ const userDetailsSchema = new mongoose.Schema(
     },
     phone: {
       type: String,
-      required: [true, "Phone number is required"],
+      required: false,
       validate: {
         validator: function (v) {
+          if (v == null || v === "") return true;
           return /^\d{10}$/.test(v);
         },
         message: (props) => `${props.value} is not a valid phone number!`,
@@ -30,8 +31,13 @@ const userDetailsSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: [true, "Password is required"],
+      required: false,
       minlength: [6, "Password must be at least 6 characters long"],
+    },
+    googleId: {
+      type: String,
+      sparse: true,
+      unique: true,
     },
   },
   {
