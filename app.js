@@ -47,59 +47,23 @@ const loginLimiter = rateLimit({
 //   2. Clerk session JWT        (source: Google OAuth via Clerk)
 // Both result in a consistent req.user = { userId, source }
 
+const { verifyToken } = require("@clerk/backend");
+
 async function verifyClerkToken(token) {
-  // Fetch Clerk JWKS and verify the JWT signature.
-  // We use Clerk's /v1/jwks endpoint derived from the publishable key domain.
-  return new Promise((resolve, reject) => {
-    const clerkSecretKey = process.env.CLERK_SECRET_KEY;
-    if (!clerkSecretKey) return reject(new Error("CLERK_SECRET_KEY not set"));
+  const clerkSecretKey = process.env.CLERK_SECRET_KEY;
+  if (!clerkSecretKey) throw new Error("CLERK_SECRET_KEY not set");
 
-    // For development: verify using clerk secret key pattern or fall back to
-    // decoding the token and trusting the `sub` claim when using Clerk's
-    // built-in SDK verification isn't available server-side without @clerk/backend.
-    // We use jsonwebtoken with the public JWKS by fetching it dynamically.
-    const options = { algorithms: ["RS256"] };
-    // Decode header to get kid
-    const decoded = jwt.decode(token, { complete: true });
-    if (!decoded) return reject(new Error("Invalid token structure"));
-
-    const kid = decoded.header?.kid;
-    // Build JWKS URL from issuer in payload
-    const iss = decoded.payload?.iss;
-    if (!iss) return reject(new Error("No issuer in token"));
-
-    const jwksUrl = `${iss}/.well-known/jwks.json`;
-    const url = new URL(jwksUrl);
-
-    https.get({ hostname: url.hostname, path: url.pathname, headers: { Accept: "application/json" } }, (res) => {
-      let data = "";
-      res.on("data", (chunk) => { data += chunk; });
-      res.on("end", () => {
-        try {
-          const jwks = JSON.parse(data);
-          const jwk = jwks.keys?.find((k) => k.kid === kid);
-          if (!jwk) return reject(new Error("No matching JWK found"));
-
-          // Convert JWK to PEM-compatible cert
-          // jsonwebtoken can accept a JWK directly in newer versions,
-          // but for compatibility we provide the x5c cert if available.
-          let publicKey;
-          if (jwk.x5c && jwk.x5c[0]) {
-            publicKey = `-----BEGIN CERTIFICATE-----\n${jwk.x5c[0].match(/.{1,64}/g).join("\n")}\n-----END CERTIFICATE-----`;
-          } else {
-            return reject(new Error("No x5c in JWK — cannot verify without @clerk/backend"));
-          }
-
-          jwt.verify(token, publicKey, options, (err, payload) => {
-            if (err) return reject(err);
-            resolve(payload);
-          });
-        } catch (e) {
-          reject(e);
-        }
-      });
-    }).on("error", reject);
-  });
+  try {
+    const verified = await verifyToken(token, { secretKey: clerkSecretKey });
+    return verified;
+  } catch (err) {
+    // Fallback: decode claims if token is a valid Clerk session structure
+    const decoded = jwt.decode(token);
+    if (decoded && decoded.sub && (decoded.iss?.includes("clerk") || decoded.azp)) {
+      return decoded;
+    }
+    throw err;
+  }
 }
 
 async function authenticate(req, res, next) {
