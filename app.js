@@ -20,11 +20,10 @@ const MONGO_URI = process.env.MONGO_URI;
 const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID;
 
 if (!GOOGLE_WEB_CLIENT_ID) {
-  console.error("FATAL: GOOGLE_WEB_CLIENT_ID is not set. Set it in the environment and restart.");
-  process.exit(1);
+  console.warn("GOOGLE_WEB_CLIENT_ID is not set. Google sign-in is disabled until it is configured.");
 }
 
-const googleClient = new OAuth2Client(GOOGLE_WEB_CLIENT_ID);
+const googleClient = new OAuth2Client();
 
 // ─── CORS & JSON ────────────────────────────────────────────────────────────
 app.use(cors({ origin: "*", methods: ["GET", "POST", "DELETE", "PUT"], allowedHeaders: ["Content-Type", "Authorization"] }));
@@ -144,6 +143,10 @@ app.post("/login", loginLimiter, async (req, res) => {
 
 // Google Sign-In — verify Google ID token, issue the same JWT shape as /login
 app.post("/auth/google", loginLimiter, async (req, res) => {
+  if (!GOOGLE_WEB_CLIENT_ID) {
+    return res.status(503).json({ message: "Google sign-in is not configured on this server." });
+  }
+
   const { idToken } = req.body;
   if (!idToken) return res.status(400).json({ message: "idToken is required." });
 
