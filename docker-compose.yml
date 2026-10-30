@@ -1,14 +1,29 @@
 services:
-  backend:
+  api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: synergy-backend
     restart: unless-stopped
     ports:
       - "5001:5001"
     env_file:
       - .env
     environment:
-      - PORT=5001
-      - NODE_ENV=production
+      PORT: 5001
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5001/health', r => { if (r.statusCode !== 200) process.exit(1); }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
