@@ -18,6 +18,7 @@ const AlertLog = require("./AlertLog");
 const { buildOccurrenceDates, localDateString, addLocalDays, localClockString, localDateTimeToUtc } = require("./scheduleTime");
 const { sendEmail, sendSms, isChannelConfigured } = require("./notificationProviders");
 const MongoRateLimitStore = require("./MongoRateLimitStore");
+const { normalizeCaregiverPhone } = require("./phoneNumber");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -996,7 +997,7 @@ function hashToken(value) {
 }
 
 function publicApiBase() {
-  return (process.env.APP_BASE_URL || "").replace(/\/$/, "");
+  return (process.env.APP_BASE_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
 }
 
 async function sendCaregiverVerification(user, token) {
@@ -1045,12 +1046,16 @@ app.put("/user/caregiver", authenticate, caregiverVerifyLimiter, async (req, res
   }
 
   // Validate format based on channel
-  const dest = destination.trim();
+  const dest = channel === "sms"
+    ? normalizeCaregiverPhone(destination)
+    : destination.trim();
+  if (!dest) {
+    return res.status(400).json({
+      error: "Enter a valid phone number. Indian 10-digit mobile numbers are accepted; international numbers must include their country code.",
+    });
+  }
   if (channel === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(dest)) {
     return res.status(400).json({ error: "A valid email address is required for email alerts." });
-  }
-  if (channel === "sms" && !/^\+[1-9]\d{6,14}$/.test(dest)) {
-    return res.status(400).json({ error: "A valid E.164 phone number (e.g. +91XXXXXXXXXX) is required for SMS alerts." });
   }
   if (!publicApiBase()) return res.status(503).json({ error: "APP_BASE_URL is required for contact verification links." });
   if (!isChannelConfigured(channel)) return res.status(503).json({ error: `${channel.toUpperCase()} delivery is not configured on the server.` });
