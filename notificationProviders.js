@@ -22,6 +22,31 @@ function isChannelConfigured(channel) {
   return false;
 }
 
+/**
+ * Return provider diagnostics without exposing SMTP responses, credentials, or
+ * recipient addresses. Provider codes are safe and actionable in server logs.
+ */
+function providerDiagnostic(channel, error) {
+  const details = { channel, code: null, status: null, command: null };
+  if (error?.providerCode !== undefined && error.providerCode !== null) {
+    details.code = String(error.providerCode).replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40) || null;
+  } else if (error?.code !== undefined && error.code !== null) {
+    details.code = String(error.code).replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40) || null;
+  }
+  const status = error?.providerStatus ?? error?.responseCode;
+  if (Number.isInteger(Number(status)) && Number(status) > 0) details.status = Number(status);
+  if (typeof error?.command === "string") {
+    details.command = error.command.replace(/[^A-Za-z0-9 _.-]/g, "").slice(0, 32) || null;
+  }
+  details.summary = [
+    `${String(channel || "message").toUpperCase()} delivery failed`,
+    details.code ? `code=${details.code}` : null,
+    details.status ? `status=${details.status}` : null,
+    details.command ? `command=${details.command}` : null,
+  ].filter(Boolean).join("; ");
+  return details;
+}
+
 async function sendEmail({ to, subject, text, unsubscribeUrl }) {
   const transporter = getEmailTransporter();
   if (!transporter || !process.env.EMAIL_FROM) throw new Error("Email delivery is not configured");
@@ -52,9 +77,10 @@ async function sendSms({ to, text }) {
   if (!response.ok) {
     const error = new Error(`SMS provider rejected the request (${response.status})`);
     error.providerCode = payload.code || null;
+    error.providerStatus = response.status;
     throw error;
   }
   return { messageId: payload.sid || null };
 }
 
-module.exports = { isChannelConfigured, sendEmail, sendSms };
+module.exports = { isChannelConfigured, sendEmail, sendSms, providerDiagnostic };

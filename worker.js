@@ -30,7 +30,7 @@ const AlertLog = require("./AlertLog");
 const User = require("./UserDetails");
 const Medication = require("./MedicationDetails");
 const { buildOccurrenceDates } = require("./scheduleTime");
-const { isChannelConfigured, sendEmail, sendSms } = require("./notificationProviders");
+const { isChannelConfigured, sendEmail, sendSms, providerDiagnostic } = require("./notificationProviders");
 const JWT_SECRET = process.env.JWT_SECRET;
 
 const MONGO_URI = process.env.MONGO_URI;
@@ -247,8 +247,13 @@ async function sendQueuedAlerts() {
           $set: { caregiverAlertSentAt: alertLog.sentAt, caregiverAlertState: "sent" },
         });
       } catch (innerErr) {
-        console.error(`[Worker] Provider delivery failed for alert ${alertLog._id} (${alertLog.channel}).`);
-        alertLog.lastErrorSummary = `${innerErr.name || "Error"}: provider delivery failed`;
+        const diagnostic = providerDiagnostic(alertLog.channel, innerErr);
+        console.error("[Worker] Provider delivery failed:", {
+          alertId: alertLog._id.toString(),
+          attempt: alertLog.attempts,
+          ...diagnostic,
+        });
+        alertLog.lastErrorSummary = diagnostic.summary;
         alertLog.leaseUntil = null;
         if (alertLog.attempts >= alertLog.maxAttempts) {
           alertLog.state = "failed";

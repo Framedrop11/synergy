@@ -16,7 +16,7 @@ const ActivityLog = require("./ActivityLog");
 const Occurrence = require("./Occurrence");
 const AlertLog = require("./AlertLog");
 const { buildOccurrenceDates, localDateString, addLocalDays, localClockString, localDateTimeToUtc } = require("./scheduleTime");
-const { sendEmail, sendSms, isChannelConfigured } = require("./notificationProviders");
+const { sendEmail, sendSms, isChannelConfigured, providerDiagnostic } = require("./notificationProviders");
 const MongoRateLimitStore = require("./MongoRateLimitStore");
 const { normalizeCaregiverPhone } = require("./phoneNumber");
 
@@ -313,6 +313,7 @@ app.post("/reminders/parse", authenticate, reminderParseLimiter, async (req, res
   }
 
   const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  const language = req.body?.language === "hi" ? "hi" : "en";
   if (text.length < 3 || text.length > 500) {
     return res.status(400).json({ message: "Enter a reminder description between 3 and 500 characters." });
   }
@@ -414,27 +415,43 @@ app.post("/reminders/parse", authenticate, reminderParseLimiter, async (req, res
     if (parsed.frequency === "unsupported") {
       return res.status(422).json({ message: "This app supports one-time and daily reminders. Please enter this schedule manually." });
     }
-    if (parsed.frequency === "unclear" || !parsed.medicationName?.trim()) {
-      return res.status(422).json({ message: "I couldn't identify a complete reminder. Add the medicine and schedule manually." });
+    if (typeof parsed.medicationName !== "string" || parsed.medicationName.length > 100) {
+      return res.status(422).json({ message: "AI returned an invalid schedule. Please try again or enter it manually." });
     }
-    if (!Array.isArray(parsed.times) || parsed.times.length < 1 || parsed.times.length > 4) {
-      return res.status(422).json({ message: "AI returned an invalid schedule. Please enter the reminder manually." });
+    const medicationName = parsed.medicationName.trim();
+    const modelQuestion = typeof parsed.clarificationPrompt === "string" && parsed.clarificationPrompt.trim()
+      ? parsed.clarificationPrompt.trim().slice(0, 240)
+      : null;
+    if (!medicationName) {
+      return res.json({ medicationName: "", dosage: null, frequency: parsed.frequency, times: [], clarificationNeeded: true, clarificationPrompt: modelQuestion || (language === "hi" ? "दवाई का नाम क्या है?" : "What is the medicine name?") });
+    }
+    if (parsed.frequency === "unclear") {
+      return res.json({ medicationName, dosage: sanitiseDosage(parsed.dosage), frequency: "unclear", times: [], clarificationNeeded: true, clarificationPrompt: modelQuestion || (language === "hi" ? "यह एक बार का रिमाइंडर हो या हर दिन दोहराया जाए?" : "Should this be a one-time reminder or repeat daily?") });
+    }
+    if (!Array.isArray(parsed.times) || parsed.times.length > 4) {
+      return res.status(422).json({ message: "AI returned an invalid schedule. Please try again or enter it manually." });
     }
 
     const validTimes = parsed.times.every(
-      (item) =>
-        item &&
-        typeof item.label === "string" &&
-        item.label.length <= 40 &&
-        (item.time === null ||
-          (typeof item.time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(item.time)))
+      (item) => item && typeof item.label === "string" && item.label.length <= 40 &&
+        (item.time === null || (typeof item.time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(item.time)))
     );
-    if (!validTimes || parsed.medicationName.length > 100) {
-      return res.status(422).json({ message: "AI returned an invalid schedule. Please enter the reminder manually." });
+    if (!validTimes) {
+      return res.status(422).json({ message: "AI returned an invalid schedule. Please try again or enter it manually." });
+    }
+
+    // An omitted clock time is a normal clarification, not a malformed schedule.
+    // Never guess a time for words such as "daily" or "morning".
+    const missingClockTime = parsed.times.length === 0 || parsed.times.some((item) => item.time === null);
+    if (parsed.clarificationNeeded || missingClockTime) {
+      const question = modelQuestion || (language === "hi"
+          ? (parsed.frequency === "daily" ? "हर दिन किस समय रिमाइंडर चाहिए? उदाहरण: सुबह 8:00 बजे।" : "इस एक बार के रिमाइंडर के लिए कौन-सी तारीख और समय चाहिए?")
+          : (parsed.frequency === "daily" ? "What clock time should I use for this daily reminder? For example, 8:00 AM." : "What date and clock time should I use for this one-time reminder?"));
+      return res.json({ medicationName, dosage: sanitiseDosage(parsed.dosage), frequency: parsed.frequency, times: parsed.times, clarificationNeeded: true, clarificationPrompt: question });
     }
 
     return res.json({
-      medicationName: parsed.medicationName.trim(),
+      medicationName,
       dosage: sanitiseDosage(parsed.dosage),
       frequency: parsed.frequency,
       times: parsed.times,
@@ -1086,7 +1103,7 @@ app.put("/user/caregiver", authenticate, caregiverVerifyLimiter, async (req, res
     try {
       await sendCaregiverVerification(user, verificationToken);
     } catch (sendError) {
-      console.error("Caregiver verification send failed:", sendError.message);
+      console.error("Caregiver verification send failed:", providerDiagnostic(channel, sendError));
       return res.status(502).json({ error: "Contact saved but verification could not be delivered. Check provider settings and retry." });
     }
 
@@ -1102,11 +1119,13 @@ app.put("/user/caregiver", authenticate, caregiverVerifyLimiter, async (req, res
 });
 
 app.post("/user/caregiver/resend-verification", authenticate, caregiverVerifyLimiter, async (req, res) => {
+  let channel = "unknown";
   try {
     const user = await User.findById(req.user.userId);
     if (!user?.caregiver?.destination || user.caregiver.verified || user.caregiver.recipientOptedOut) {
       return res.status(400).json({ error: "There is no pending caregiver verification." });
     }
+    channel = user.caregiver.channel;
     if (!publicApiBase() || !isChannelConfigured(user.caregiver.channel)) {
       return res.status(503).json({ error: "Configure APP_BASE_URL and the selected messaging provider first." });
     }
@@ -1117,7 +1136,7 @@ app.post("/user/caregiver/resend-verification", authenticate, caregiverVerifyLim
     await sendCaregiverVerification(user, token);
     return res.json({ success: true, message: "Verification link sent." });
   } catch (error) {
-    console.error("Caregiver verification resend failed:", error.message);
+    console.error("Caregiver verification resend failed:", providerDiagnostic(channel, error));
     return res.status(502).json({ error: "Verification message could not be sent." });
   }
 });
