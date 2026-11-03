@@ -79,7 +79,7 @@ Run the worker separately with `npm run start:worker`. For containers, configure
 
 ## Production configuration
 
-Configure secrets in the hosting provider’s secret store. Do not place production values in `.env.example`, `eas.json`, mobile `EXPO_PUBLIC_*` variables, or this README. The backend requires a MongoDB connection, a strong JWT signing secret, exact production CORS origins, and provider settings for whichever email, SMS, and AI features are enabled. Contact verification links require the public HTTPS API base URL.
+Configure secrets in the hosting provider’s secret store. Never place private credentials in `.env.example`, `eas.json`, mobile `EXPO_PUBLIC_*` variables, or this README. Public client IDs and API URLs may be included in the mobile build; database passwords, provider credentials, and signing secrets must stay server-side. The backend requires a MongoDB connection, a strong JWT signing secret, exact production CORS origins, and provider settings for whichever email, SMS, and AI features are enabled. Contact verification links require the public HTTPS API base URL.
 
 The existing Render API service can retain its root-level `npm start` command: the root shim forwards startup to the backend implementation. Existing root-based Docker deployments can use the compatibility Dockerfiles. The included Render Blueprint targets `synergy-backend/` for the API and worker and references the `synergy-secrets` environment group; keep that group populated with production secrets. Render autoscaling requires a workspace plan that supports it; the blueprint configures API instance scaling and Render supplies the service load balancer.
 
