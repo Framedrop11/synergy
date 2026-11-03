@@ -1,0 +1,33 @@
+# Dependencies and Git metadata
+node_modules/
+.git/
+
+# Local environment and signing credentials
+.env
+.env.*
+!.env.example
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Android build artifacts and machine-local settings
+android/app/build/
+android/build/
+android/.gradle/
+android/app/.cxx/
+android/.idea/
+android/local.properties
+*.hprof
+
+# Expo caches and local export output
+.expo/
+.expo-export-check/
+dist/
+web-build/
+
+# Logs and system files
+*.log
+npm-debug.*
+.DS_Store

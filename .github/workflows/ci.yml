@@ -1,0 +1,71 @@
+name: PatientCareAI CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend-and-api-integration:
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: synergy-backend
+    env:
+      MONGO_URI: mongodb://127.0.0.1:27017/synergy_test
+      # Test-only deterministic value; never reuse for a deployed service.
+      JWT_SECRET: ${{ format('ci-test-only-{0}-{0}-{0}-{0}', github.run_id) }}
+      NODE_ENV: test
+      CORS_ORIGIN: http://localhost:8081
+      PORT: 5001
+      API_BASE_URL: http://127.0.0.1:5001
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: synergy-backend/package-lock.json
+      - run: npm ci
+      - run: node --check app.js && node --check worker.js && node --check MongoRateLimitStore.js
+      - run: npm start > /tmp/synergy-api.log 2>&1 &
+      - name: Wait for API readiness
+        run: |
+          for attempt in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:5001/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/synergy-api.log
+          exit 1
+      - run: npm test
+
+  mobile-validation:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Oauth_final
+    env:
+      EXPO_PUBLIC_API_URL: http://127.0.0.1:5001
+      EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID: ci-placeholder.apps.googleusercontent.com
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Oauth_final/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npx expo export --platform android

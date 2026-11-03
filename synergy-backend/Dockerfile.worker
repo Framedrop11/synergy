@@ -1,0 +1,20 @@
+# Dockerfile for the background escalation worker
+# Separate from the API server so it can be scaled/restarted independently.
+FROM node:22-slim
+
+WORKDIR /usr/src/app
+
+ENV NODE_ENV=production
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY . .
+
+# Run as non-root node user for security
+USER node
+
+# The worker has no HTTP port to expose.
+# Graceful shutdown is handled by SIGTERM in worker.js.
+
+CMD ["node", "worker.js"]

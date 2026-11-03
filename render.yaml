@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: synergy-api
+    runtime: docker
+    dockerfilePath: ./synergy-backend/Dockerfile
+    dockerContext: ./synergy-backend
+    plan: standard
+    region: singapore
+    healthCheckPath: /health
+    scaling:
+      minInstances: 1
+      maxInstances: 3
+      targetMemoryPercent: 75
+      targetCPUPercent: 70
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - fromGroup: synergy-secrets
+
+  - type: worker
+    name: synergy-worker
+    runtime: docker
+    dockerfilePath: ./synergy-backend/Dockerfile.worker
+    dockerContext: ./synergy-backend
+    plan: standard
+    region: singapore
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - fromGroup: synergy-secrets

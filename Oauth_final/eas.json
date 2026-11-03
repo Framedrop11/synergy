@@ -1,0 +1,33 @@
+{
+  "cli": {
+    "version": ">= 12.1.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "node": "22.13.0",
+      "env": {
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "288663101499-d6gp4q8k5vmt7u8fuo6jqtb7v512772g.apps.googleusercontent.com",
+        "EXPO_PUBLIC_API_URL": "https://synergy-backend-sf43.onrender.com"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "288663101499-d6gp4q8k5vmt7u8fuo6jqtb7v512772g.apps.googleusercontent.com",
+        "EXPO_PUBLIC_API_URL": "https://synergy-backend-sf43.onrender.com"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

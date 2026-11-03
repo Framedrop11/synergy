@@ -1,0 +1,33 @@
+{
+  "name": "synergy-backend",
+  "version": "1.1.0",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "start:worker": "node worker.js",
+    "test": "node --test",
+    "test:integration": "node --test test/integration.test.js",
+    "dev": "nodemon app.js",
+    "dev:worker": "nodemon worker.js",
+    "start:all": "node -e \"const {spawn}=require('child_process');['app.js','worker.js'].forEach(f=>{const p=spawn('node',[f],{stdio:'inherit'});p.on('exit',c=>console.log(f,'exited',c));})\""
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "Synergy medication reminder backend API and escalation worker",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^18.0.4",
+    "express": "^4.21.1",
+    "express-rate-limit": "^8.7.0",
+    "google-auth-library": "^10.9.1",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^8.8.0",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.16",
+    "nodemon": "^3.1.7"
+  }
+}

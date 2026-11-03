@@ -1,21 +1,18 @@
 {
-  "name": "synergy-backend",
+  "name": "patientcareai",
   "version": "1.1.0",
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
     "start:worker": "node worker.js",
-    "test": "node --test",
-    "test:integration": "node --test test/integration.test.js",
-    "dev": "nodemon app.js",
-    "dev:worker": "nodemon worker.js",
-    "start:all": "node -e \"const {spawn}=require('child_process');['app.js','worker.js'].forEach(f=>{const p=spawn('node',[f],{stdio:'inherit'});p.on('exit',c=>console.log(f,'exited',c));})\""
+    "test": "npm --prefix synergy-backend test",
+    "test:integration": "npm --prefix synergy-backend run test:integration"
   },
   "author": "",
   "license": "ISC",
-  "description": "Synergy medication reminder backend API and escalation worker",
+  "description": "PatientCareAI full-stack medication reminder application",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.19.4"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
